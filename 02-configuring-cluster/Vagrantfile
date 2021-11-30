@@ -1,0 +1,189 @@
+# frozen_string_literal: true
+
+# Specify minimum Vagrant version and Vagrant API version
+Vagrant.require_version ">= 1.6.0"
+VAGRANTFILE_API_VERSION = "2"
+
+# Require modules
+require 'yaml'
+require 'net/ssh'
+
+# load settings
+settings = YAML.load_file('../settings.yaml')
+ssh_username = settings["ssh-username"]
+ssh_private_key = File.expand_path(settings["ssh-private-key"]).to_s
+ssh_private_key_filename = File.basename(ssh_private_key).to_s
+guest_os_name = settings["guest-os-name"]
+headless = settings["headless"]
+virtual_ip = settings["virtual-ip"]
+virtual_ip_network_interface = settings["virtual-ip-network-interface"]
+pod_network_cidr = settings["pod-network-cidr"]
+nodes = settings["nodes"]
+
+def configure_machine(node, node_config, guest_os_name, headless)
+  node_config.vm.hostname = node["hostname"]
+  node_config.vm.network 'private_network', ip: node["ip"]
+  node_config.vm.box = "k8s.node-#{node["type"]}.#{guest_os_name}"
+  node_config.vm.provider 'vmware_desktop' do |vmware|
+    vmware.gui = !headless
+    vmware.allowlist_verified = true
+    vmware.vmx["ethernet0.pcislotnumber"] = "33"
+    vmware.vmx["ethernet1.pcislotnumber"] = "34"
+    vmware.vmx["displayname"] = node["hostname"]
+    vmware.vmx["memsize"] = node["memory"].to_s
+    vmware.vmx["numvcpus"] = node["cpus"].to_s
+  end
+end
+
+# Vagrant procedure
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+
+  puts "Vagrant folder is located to: " + ENV["VAGRANT_DOTFILE_PATH"]
+
+  config.ssh.username = ssh_username
+  config.ssh.private_key_path = ssh_private_key
+  config.vm.synced_folder '.', '/vagrant', disabled: true
+
+  is_provisioned =  ARGV.include? 'provision'
+
+  if is_provisioned
+    # data selection
+    provision_all_data = nodes
+     .map { |node| "#{node["ip"]} #{node["hostname"]}" }
+     .join(',') + ",#{virtual_ip} k8s-frontend"
+    provision_deploy_data = nodes
+      .filter { |node| node["type"].to_s.match(/master|proxy/) }
+      .map { |node| node["ip"].to_s }
+      .join(',')
+    provision_proxy_data = nodes
+      .filter { |node| node["type"].include?('master') }
+      .map { |node| "#{node["hostname"]} #{node["ip"]}" }
+      .join(',')
+    provision_master_data_as_master = nodes
+      .filter { |node| node["type"].include?('master') && node["state"] == "master" }
+      .map { |node| node["ip"].to_s }
+    provision_master_data_as_backup = nodes
+      .filter { |node| node["type"].include?('master') && node["state"] == "backup" }
+      .map { |node| node["ip"].to_s }
+    # nodes selection
+    nodes_deploy = nodes
+      .filter { |node| node["type"].match(/deploy/) }
+    nodes_proxy = nodes
+      .filter { |node| node["type"].match(/proxy/) }
+    nodes_master_as_master = nodes
+      .filter { |node| node["type"].match(/master/) && node["state"] == "master" }
+    nodes_master_as_backup = nodes
+      .filter { |node| node["type"].match(/master/) && node["state"] == "backup" }
+    nodes_worker = nodes
+      .filter { |node| node["type"].match(/worker/) }
+
+    # provision
+    ## all
+
+    nodes.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+        node_config.vm.provision :shell,
+          env: {
+           'HOSTS' => provision_all_data
+          },
+          path: 'configs/k8s.hosts.setup.sh',
+          run: "always"
+      end
+    end
+
+    # proxy
+
+    nodes_proxy.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+        node_config.vm.provision :shell,
+        env: {
+          'VIRTUAL_IP' => virtual_ip,
+          'NETWORK_INTERFACE' => virtual_ip_network_interface,
+          'STATE' => node["state"],
+          'PRIORITY' => node["priority"],
+          'MASTER_NODES' => provision_proxy_data
+        },
+        path: 'configs/k8s.node-proxy.setup.sh',
+        run: "always"
+      end
+    end
+
+    # init master
+
+    nodes_master_as_master.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+        node_config.vm.provision :shell,
+        env: {
+          'SSH_USERNAME' => ssh_username,
+          'VIRTUAL_IP' => virtual_ip,
+          'NODE_IP' => node["ip"],
+          'POD_NETWORK_CIDR' => pod_network_cidr,
+        },
+        path: 'configs/k8s.node-master-as-master.setup.sh',
+        run: "always"
+      end
+    end
+
+    # backup join master
+
+    nodes_master_as_backup.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+        node_config.vm.provision :shell,
+          env: {
+            'SSH_USERNAME' => ssh_username,
+            'SSH_PRIVATE_KEY_FILENAME' => ssh_private_key_filename,
+            'VIRTUAL_IP' => virtual_ip,
+            'NODE_IP' => node["ip"],
+            'MASTER_IP' => nodes_master_as_master.first["ip"]
+          },
+          path: 'configs/k8s.node-master-as-backup.setup.sh',
+          run: "always"
+      end
+    end
+
+    # worker join master
+
+    nodes_worker.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+        node_config.vm.provision :shell,
+          env: {
+            'SSH_USERNAME' => ssh_username,
+            'SSH_PRIVATE_KEY_FILENAME' => ssh_private_key_filename,
+            'VIRTUAL_IP' => virtual_ip,
+            'NODE_IP' => node["ip"],
+            'MASTER_IP' => nodes_master_as_master.first["ip"]
+          },
+          path: 'configs/k8s.node-worker.setup.sh',
+          run: "always"
+      end
+    end
+
+    # deploy
+
+    nodes_deploy.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+        node_config.vm.provision :shell,
+          env: {
+            'SSH_USERNAME' => ssh_username,
+            'SSH_PRIVATE_KEY_FILENAME' => ssh_private_key_filename,
+            'NODES' => provision_deploy_data,
+            'MASTER_IP' => nodes_master_as_master.first["ip"]
+          },
+          path: 'configs/k8s.node-deploy.setup.sh',
+          run: "always"
+      end
+    end
+  else
+    nodes.each do |node|
+      config.vm.define node["hostname"] do |node_config|
+        configure_machine(node, node_config, guest_os_name, headless)
+      end
+    end
+  end
+end

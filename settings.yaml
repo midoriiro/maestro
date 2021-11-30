@@ -1,0 +1,71 @@
+root-folder: "F:/appdata/.maestro"
+headless: true
+ssh-username: "kuber"
+ssh-public-key: "~/.ssh/kuber/id_ed25519.pub"
+ssh-private-key: "~/.ssh/kuber/id_ed25519"
+guest-os-name: "debian-11.1.0"
+virtual-ip: "172.16.16.100"
+virtual-ip-network-interface: "ens34"
+pod-network-cidr: "192.168.0.0/16"
+nodes:
+  -
+    hostname: "k8s-proxy-1"
+    ip: "172.16.16.121"
+    cpus: 1
+    memory: 512
+    type: "proxy"
+    state: "master"
+    priority: "102"
+  -
+    hostname: "k8s-proxy-2"
+    ip: "172.16.16.122"
+    cpus: 1
+    memory: 512
+    type: "proxy"
+    state: "backup"
+    priority: "100"
+  -
+    hostname: "k8s-master-1"
+    ip: "172.16.16.131"
+    cpus: 2
+    memory: 2048
+    type: "master"
+    state: "master"
+  -
+    hostname: "k8s-master-2"
+    ip: "172.16.16.132"
+    cpus: 2
+    memory: 2048
+    type: "master"
+    state: "backup"
+  -
+    hostname: "k8s-master-3"
+    ip: "172.16.16.133"
+    cpus: 2
+    memory: 2048
+    type: "master"
+    state: "backup"
+  -
+    hostname: "k8s-worker-1"
+    ip: "172.16.16.141"
+    cpus: 4
+    memory: 4096
+    type: "worker"
+  -
+    hostname: "k8s-worker-2"
+    ip: "172.16.16.142"
+    cpus: 4
+    memory: 4096
+    type: "worker"
+  -
+    hostname: "k8s-worker-3"
+    ip: "172.16.16.143"
+    cpus: 4
+    memory: 4096
+    type: "worker"
+  -
+    hostname: "k8s-deploy"
+    ip: "172.16.16.110"
+    cpus: 1
+    memory: 512
+    type: "deploy"
